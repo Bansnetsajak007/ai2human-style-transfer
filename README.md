@@ -285,14 +285,5 @@ The `deep_analysis_5k.png` shows the same analysis on the 5k subset, confirming 
 Aspiring AI Researcher | NLP enthusiast  
 Kathmandu, Nepal  
 
-[![GitHub](https://img.shields.io/badge/GitHub-sajak--basnet-black.svg)](https://github.com/yourusername)
-
----
-
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
----
 
 *Built with zero budget, a lot of patience, and way too many GPU hours on Kaggle free tier.*
