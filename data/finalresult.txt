@@ -1,0 +1,124 @@
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 61.1/61.1 kB 3.3 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 177.1/177.1 kB 12.8 MB/s eta 0:00:00
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 49.9 MB/s eta 0:00:00
+Total test samples: 16
+['id', 'ai_text', 'humanized_text']
+
+============================================================
+METRIC 1 — BERTScore (Semantic Preservation)
+============================================================
+config.json: 100%
+ 482/482 [00:00<00:00, 55.9kB/s]
+tokenizer_config.json: 100%
+ 25.0/25.0 [00:00<00:00, 2.90kB/s]
+vocab.json: 
+ 899k/? [00:00<00:00, 17.3MB/s]
+merges.txt: 
+ 456k/? [00:00<00:00, 17.4MB/s]
+tokenizer.json: 
+ 1.36M/? [00:00<00:00, 19.9MB/s]
+model.safetensors: 100%
+ 1.42G/1.42G [00:35<00:00, 43.1MB/s]
+Loading weights: 100%
+ 389/389 [00:00<00:00, 570.54it/s, Materializing param=encoder.layer.23.output.dense.weight]
+RobertaModel LOAD REPORT from: roberta-large
+Key                             | Status     | 
+--------------------------------+------------+-
+lm_head.dense.weight            | UNEXPECTED | 
+lm_head.layer_norm.weight       | UNEXPECTED | 
+roberta.embeddings.position_ids | UNEXPECTED | 
+lm_head.layer_norm.bias         | UNEXPECTED | 
+lm_head.bias                    | UNEXPECTED | 
+lm_head.dense.bias              | UNEXPECTED | 
+pooler.dense.bias               | MISSING    | 
+pooler.dense.weight             | MISSING    | 
+
+Notes:
+- UNEXPECTED	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+- MISSING	:those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
+calculating scores...
+computing bert embedding.
+100%
+ 1/1 [00:02<00:00,  2.47s/it]
+computing greedy matching.
+100%
+ 1/1 [00:00<00:00,  6.83it/s]
+done in 2.63 seconds, 6.09 sentences/sec
+
+BERTScore Precision: 0.8531
+BERTScore Recall:    0.8839
+BERTScore F1:        0.8680
+→ Higher = better semantic preservation ✅
+
+============================================================
+METRIC 2 — Linguistic Markers Shift
+============================================================
+
+Metric                   AI Input    Humanized     Change
+--------------------------------------------------------
+Word Count                 91.688      201.312 ↑   119.6%
+Contractions                0.000        2.125 ↑     0.0%
+Question Marks              0.000        0.375 ↑     0.0%
+Exclamations                0.000        0.750 ↑     0.0%
+Lexical Diversity           0.817        0.745 ↓     8.9%
+Avg Word Length             5.506        4.632 ↓    15.9%
+Sent Variance              43.928       76.384 ↑    73.9%
+Flesch Ease                33.004       59.729 ↑    81.0%
+Grade Level                14.152       10.529 ↓    25.6%
+
+============================================================
+METRIC 3 — Readability Analysis
+============================================================
+Flesch Reading Ease:
+  AI Input:   33.00 (higher = easier)
+  Humanized:  59.73
+
+Grade Level:
+  AI Input:   14.15
+  Humanized:  10.53
+
+============================================================
+METRIC 4 — Qualitative Examples
+============================================================
+
+--- Example 1 ---
+AI INPUT:
+As the use of AI rapidly expands across industries, it is also introducing a new wave of security concerns that cannot be ignored. One major issue is the increased risk of data privacy breaches, as AI systems often rely on vast amounts of sensitive data for training and operation, making them attrac...
+
+HUMANIZED:
+With technology going faster every day, we have been looking to introduce this new idea called 'AI'. With this came along with some serious security problems that cannot be ignored.  One large problem would be that people's private data could be easily hacked because AI systems need so much private ...
+
+BERTScore F1: 0.8725
+
+--- Example 2 ---
+AI INPUT:
+AI often creates the illusion of intelligence, appearing to understand, reason, and even “think” like humans, when in reality it is primarily recognizing patterns and generating responses based on vast amounts of data. This can lead users to overestimate its capabilities, trusting outputs without qu...
+
+HUMANIZED:
+I'm always impressed by how well the computer seems to understand me... but I don't think computers really "think." They seem to know what you mean because of all the things they have been taught. It makes them very good at predicting your behavior and giving you exactly what you want; however, that...
+
+BERTScore F1: 0.8655
+
+--- Example 3 ---
+AI INPUT:
+At its core, AI is fundamentally mathematics wrapped in elegant abstractions, appearing far more “intelligent” than it truly is. Behind the polished interfaces and human-like outputs lie layers of linear algebra, probability, optimization, and statistical modeling working together to detect patterns...
+
+HUMANIZED:
+In truth I think AI is basically math with fancy wrapping paper put around it so people see it as something smart when really you could just look at the numbers and do the calculations yourself. Underneath all the polish there's an amazing layer of linear algebra, some probability, optimization, and...
+
+BERTScore F1: 0.8462
+
+
+Saved to evaluation_results.png ✅
+
+============================================================
+FINAL EVALUATION SUMMARY
+============================================================
+BERTScore F1 (semantic preservation): 0.8680
+Contraction shift: 0.00 → 2.12
+Word length shift: 5.51 → 4.63
+Readability shift: 33.00 → 59.73
+Burstiness shift:  43.93 → 76.38
+Questions shift:   0.00 → 0.38
+
+Full evaluation saved to final_evaluation.csv ✅

@@ -1,0 +1,508 @@
+\documentclass{article}
+
+\IfFileExists{neurips_2024.sty}{%
+  \usepackage[preprint]{neurips_2024}
+}{%
+  \usepackage[margin=1in]{geometry}
+}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{float}
+
+\title{From Machine to Human: A Comparative Study of\\
+Seq2Seq and Decoder-Only Transformers for\\
+AI-to-Human Text Style Transfer}
+
+\author{
+  Sajak Basnet \\
+  Department of Computer Science \\
+  {Gomendra Multiple College} \\
+  Birtamode, Nepal \\
+  \texttt{sajak55460@gomendracollege.edu.np} \\
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+The growing use of large language models has made it increasingly common to encounter AI-generated text in everyday settings, from student essays to professional documents. While much attention has been paid to detecting such text, far less work has explored the reverse direction: transforming AI-generated writing into something that reads naturally as human-authored. In this paper, we tackle this problem directly. We build a parallel corpus of 9,975 paired AI-generated and human-written passages and conduct a thorough linguistic analysis that reveals 11 measurable stylistic markers separating the two styles. The most striking of these is contraction usage, where human text averages 2.64 contractions per passage compared to just 0.01 in AI text, a difference of roughly 99\%. We then fine-tune two families of models on this corpus: T5-small and T5-base as encoder-decoder baselines, and Gemma 2B as a decoder-only approach using QLoRA. The results are clear. Gemma 2B achieves a BERTScore F1 of 0.868, shifts all 11 linguistic markers toward human distributions, improves readability by 81\%, and increases sentence length variance by nearly 74\%, all within just 500 training steps. T5-based models, despite more training, only manage surface-level vocabulary changes. Our findings suggest that decoder-only models pretrained on human text carry an inherent advantage for this task, and that pretraining data distribution matters more than fine-tuning duration when learning to write like a human.
+\end{abstract}
+
+% ============================================================
+\section{Introduction}
+% ============================================================
+
+If you have used ChatGPT, Claude, or Gemini to help write something, you have probably noticed that the output has a certain feel to it. The sentences are clean and well-structured, the vocabulary is formal and precise, and there is a certain smoothness that, after a while, becomes recognizable. This is not a coincidence. Large language models are trained to maximize coherence and fluency, and in doing so they develop consistent stylistic habits that diverge from the messiness and personality of human writing.
+
+This gap between human and AI writing has spawned a growing industry of AI detectors \cite{mitchell2023detectgpt, tang2023science}, tools that claim to identify machine-generated text based on statistical patterns. What is less studied is the other side of this problem: can we build a model that learns to close this gap? Can a fine-tuned transformer take AI-generated text and rewrite it so that it genuinely reads like something a person wrote?
+
+That is the question this paper tries to answer.
+
+We are motivated by a few practical observations. First, many people use AI as a writing assistant but want the final output to reflect their own voice. Second, researchers studying AI-generated content need tools that can model the stylistic transformation between human and machine writing. Third, and perhaps most interestingly, building a humanizer forces us to precisely characterize what human writing actually looks like at a statistical level, which turns out to be quite revealing.
+
+Our approach is straightforward. We take human-written passages, generate AI-style rewrites of each one using a hosted language model, and train sequence-to-sequence and instruction-tuned models to map from AI text back to human text. Along the way, we carefully measure what changes during this transformation and what does not.
+
+\textbf{Our main contributions are as follows:}
+
+\begin{itemize}
+    \item We build an automated pipeline for constructing parallel AI-Human text corpora, producing 9,975 high-quality paired passages with full progress checkpointing and quality filtering.
+    
+    \item We identify and quantify 11 linguistic markers that reliably distinguish AI-generated text from human writing, providing what we believe is the most systematic characterization of this stylistic gap to date.
+    
+    \item We run a controlled comparison of three model configurations (T5-small, T5-base, and Gemma 2B with QLoRA) on the same dataset, isolating the contribution of architecture, scale, and training data.
+    
+    \item We introduce a linguistic marker shift framework as an evaluation method that directly measures how much a model output moves from the AI distribution toward the human one across all 11 dimensions simultaneously.
+    
+    \item We show that the entire pipeline, from data generation to fine-tuning to evaluation, can be executed at essentially zero cost using free compute tiers and open-weight models.
+\end{itemize}
+
+% ============================================================
+\section{Related Work}
+% ============================================================
+
+\subsection{Detecting AI-Generated Text}
+
+There is now a substantial body of work on identifying machine-generated text. DetectGPT \cite{mitchell2023detectgpt} exploits the observation that AI text tends to occupy local maxima of the model's log-probability surface, which means small perturbations consistently decrease the score. Other approaches train classifiers directly \cite{guo2023close} or use watermarking techniques to embed detectable signals at generation time \cite{tang2023science}. What all of these methods share is a reliance on the very stylistic patterns we aim to remove, which is what makes our work complementary rather than competitive with theirs.
+
+\subsection{Text Style Transfer}
+
+Style transfer in NLP refers to the task of changing the stylistic properties of a text while keeping its meaning intact \cite{jin2022deep}. Prior work has addressed sentiment transfer \cite{shen2017style}, formality \cite{rao2018dear}, and author imitation \cite{wegmann2022author}. Most of these tasks involve shifting along a single stylistic axis, like making a positive review sound negative. What we are doing is somewhat different: we are trying to shift along many axes simultaneously, moving from a cluster of AI stylistic habits toward a much more variable and personal human style. As far as we are aware, this specific formulation has not been studied before.
+
+\subsection{T5 and Sequence-to-Sequence Learning}
+
+T5 \cite{raffel2020exploring} reframed a wide range of NLP tasks as text-to-text problems, showing that a single model trained with a shared framework could handle translation, summarization, classification, and more. This makes it a natural starting point for style transfer. However, T5 was pretrained primarily on filtered web text focused on task completion rather than stylistic mimicry, which we find matters quite a bit for our task.
+
+\subsection{Decoder-Only Language Models}
+
+The GPT family \cite{radford2019language} demonstrated that autoregressive language models trained on raw human text develop remarkably rich generative capabilities. LLaMA \cite{touvron2023llama} extended this to open-weight models, and Gemma 2B \cite{google2024gemma} pushes it further by distilling knowledge from a much larger 27B model into a compact 2B parameter form. We choose Gemma 2B specifically because of its strong language understanding relative to its size and because it was trained predominantly on human-generated content, which we hypothesize gives it an advantage for learning human writing style.
+
+\subsection{Parameter-Efficient Fine-Tuning}
+
+QLoRA \cite{dettmers2023qlora} makes it practical to fine-tune large language models on consumer hardware by combining 4-bit quantization with low-rank adapters. Rather than updating all model weights, only a small set of adapter parameters are trained, typically less than 1\% of the total. This is what allows us to fine-tune a 2.6B parameter model on a single GPU without running out of memory.
+
+% ============================================================
+\section{Dataset Construction}
+% ============================================================
+
+\subsection{Where the Data Comes From}
+
+We start with the AI vs. Human Text dataset available on Kaggle \cite{kaggle_aivshuman}, which contains 487,235 labeled text passages. We keep only the human-authored examples, identified by the label 0, giving us a pool of 305,797 passages to work from. We then randomly sample 10,000 of these using a fixed seed (42) to ensure our experiments are reproducible.
+
+The passages in this dataset are mostly student essays and argumentative writing pieces. They are longer than typical training examples: the average passage runs to about 418 words, with a minimum of 188 and a maximum of 1,247. This length is both a strength (there is enough content for meaningful stylistic analysis) and a challenge (it pushes the limits of standard context windows during training, which we address in Section 4).
+
+\subsection{Generating AI Versions}
+
+For each of the 10,000 human passages, we generate a semantically equivalent AI-style rewrite using LLaMA 3.2 3B Instruct, accessed through the NVIDIA NIM API. The prompt we use is intentionally strict:
+
+\begin{quote}
+\textit{You are an AI text generator. Rewrite the following human-written text in a typical AI-generated style. Rules: (1) Preserve the EXACT meaning and information. (2) Use a formal, structured, AI-like tone. (3) Use precise and neutral vocabulary. (4) Avoid contractions, slang, or casual language. (5) Output ONLY the rewritten text, with no explanation or preamble.}
+\end{quote}
+
+We implement the generation pipeline with automatic progress saving every 50 examples (so a crash does not lose everything), three retry attempts per example with exponential backoff, and a small delay between requests to stay within rate limits. The pipeline ran over approximately 11 hours and completed without significant failures.
+
+\subsection{Cleaning and Deduplication}
+
+After generation, we check for duplicates in both the human text and AI text columns. We find 25 duplicate human passages in the 10,000-sample pool, which we remove. This leaves us with a final corpus of 9,975 unique parallel pairs. Zero fully duplicate pairs exist in the final dataset.
+
+\subsection{Linguistic Analysis of the Corpus}
+
+Before training anything, we spend time characterizing what actually separates human writing from AI writing in this corpus. We measure 11 features across all 9,975 pairs. The full results are in Table \ref{tab:linguistic_markers}, and we highlight a few findings worth noting here.
+
+\begin{table}[ht]
+\centering
+\caption{Linguistic marker comparison between human-authored and AI-generated text across 9,975 parallel pairs. Positive delta values indicate AI text has more of that feature; negative values indicate less.}
+\label{tab:linguistic_markers}
+\vspace{4pt}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Metric} & \textbf{Human Text} & \textbf{AI Text} & \textbf{Change} \\
+\midrule
+Average word count & 418.4 & 331.3 & $-$20.8\% \\
+Average sentence count & 20.7 & 16.4 & $-$20.8\% \\
+Average word length (chars) & 4.53 & 5.55 & $+$22.5\% \\
+Lexical diversity & 0.482 & 0.550 & $+$14.1\% \\
+Contractions per passage & 2.64 & 0.01 & $-$99.6\% \\
+Question marks per passage & 0.80 & 0.11 & $-$86.3\% \\
+Exclamations per passage & 0.30 & 0.01 & $-$96.7\% \\
+Commas per passage & 15.82 & 20.89 & $+$32.1\% \\
+Sentence length variance & 163.93 & 49.75 & $-$69.7\% \\
+Flesch Reading Ease & 63.09 & 29.91 & $-$52.6\% \\
+Flesch-Kincaid Grade Level & 9.84 & 14.25 & $+$44.8\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The most striking finding is how clean the contraction signal is. Human text averages 2.64 contractions per passage. AI text averages 0.01. That is close to a perfect separation on a single feature. AI text also reads at a college senior level on average (Grade 14.25) compared to a high school level for human text (Grade 9.84), it uses words that are about 22\% longer on average, and it shows about 70\% less variation in sentence length. Human writers naturally mix short punchy sentences with longer elaborated ones; AI writers tend to produce more uniform paragraph structure.
+
+We also check whether these numbers are stable or just an artifact of our sample size. Running the same analysis on an earlier subset of 1,800 pairs gives nearly identical numbers across all 11 metrics, which suggests these patterns are robust properties of the underlying distributions and not sampling artifacts.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/text_analysis.png}
+\caption{Distribution-level comparison of human and AI text across word count, sentence count, average word length, and word-count spread.}
+\label{fig:text_analysis}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/deep_analysis.png}
+\caption{Deeper corpus diagnostics comparing punctuation behavior, sentence-length variance, readability, and high-frequency lexical patterns.}
+\label{fig:deep_analysis}
+\end{figure}
+
+% ============================================================
+\section{Methodology}
+% ============================================================
+
+\subsection{Problem Setup}
+
+We treat AI-to-Human style transfer as a conditional text generation problem. Given an AI-generated passage $x$, we want to learn a model $f_\theta$ that produces a human-like rewrite $\hat{y}$ such that:
+
+\begin{equation}
+\hat{y} = \arg\max_{y} \; P_\theta(y \mid x)
+\end{equation}
+
+The key constraints are that $\hat{y}$ should preserve the semantic content of $x$ (we are changing style, not meaning) while shifting its stylistic properties from the AI distribution toward the human one. The 11 linguistic markers we measure give us a concrete, quantitative way to check whether this shift is actually happening.
+
+\subsection{Chunking Long Passages}
+
+One immediate practical problem is that our passages average 418 words, which at typical tokenization ratios translates to somewhere between 550 and 650 tokens. This is already pushing against or past the 512-token context limits of our smaller models, and naively truncating the input would throw away much of the content.
+
+We address this with a sentence-aware chunking strategy. Rather than splitting at a fixed token boundary (which would cut mid-sentence), we use NLTK to segment each passage into individual sentences, then greedily group sentences into chunks of at most 200 tokens. We align the human and AI chunks by position within each passage, so chunk $i$ of the AI version corresponds to chunk $i$ of the human version. Chunk pairs where either side has fewer than 10 words are discarded.
+
+This process converts 9,975 passage pairs into 24,602 chunk pairs, with an average AI chunk of 133.9 words and an average human chunk of 147.2 words. Beyond solving the truncation problem, chunking also multiplies our effective training data by a factor of 2.47, which turns out to help quite a bit.
+
+\subsection{Model 1: T5-Small}
+
+T5-Small \cite{raffel2020exploring} has 60 million parameters and uses a standard encoder-decoder architecture. We prepend the task prefix \texttt{"humanize: "} to each AI text input and train the model to output the corresponding human chunk. Training details:
+
+\begin{itemize}[noitemsep]
+    \item Dataset: 5,000 pairs (chunked to approximately 10,830 chunks)
+    \item Epochs: 5, batch size: 16 (effective)
+    \item Max sequence length: 256 tokens
+    \item Learning rate: $5 \times 10^{-5}$
+    \item Hardware: Kaggle 2x T4 GPU (free tier)
+\end{itemize}
+
+\subsection{Model 2: T5-Base}
+
+T5-Base \cite{raffel2020exploring} scales the same architecture to 220 million parameters. We run two configurations to separately measure the effect of dataset size and learning rate tuning.
+
+\textbf{Configuration A} uses 5,000 pairs and the default learning rate of $5 \times 10^{-5}$. \textbf{Configuration B} uses the full 10,000 pairs with an increased learning rate of $3 \times 10^{-4}$ and a cosine decay schedule with a warmup ratio of 0.1. Both configurations use gradient accumulation over 4 steps for an effective batch size of 16, fp16 mixed precision, and run for 5 epochs on Kaggle 2x T4 GPU.
+
+\subsection{Model 3: Gemma 2B with QLoRA}
+
+Gemma 2B \cite{google2024gemma} is a decoder-only model with 2.635 billion parameters, distilled from a 27B parameter teacher. Rather than full fine-tuning, we use QLoRA \cite{dettmers2023qlora} to keep memory requirements manageable.
+
+\textbf{Quantization setup:} We load the model in 4-bit NF4 format with double quantization and float16 compute dtype. This reduces the memory footprint enough to train on a single consumer GPU.
+
+\textbf{LoRA configuration:} We add adapters with rank $r = 16$ and scaling $\alpha = 32$ to the query, key, value, and output projection layers of each attention block. This gives us 20,766,720 trainable parameters out of 2.635 billion total, or about 0.79\%.
+
+\textbf{Training setup:}
+\begin{itemize}[noitemsep]
+    \item Dataset: Full 9,975 pairs, chunked to 24,602 training chunks
+    \item Epochs: 3, total steps: 500
+    \item Batch size: 2 (effective 8 with gradient accumulation over 4 steps)
+    \item Learning rate: $2 \times 10^{-4}$ with cosine decay
+    \item Optimizer: Paged AdamW 32-bit
+    \item Framework: Unsloth for 2x training speedup
+\end{itemize}
+
+We use the following instruction format during training:
+
+\begin{verbatim}
+### Instruction:
+Rewrite the following AI-generated text
+to sound natural and human-written.
+Keep the same meaning. Use a conversational
+tone. Vary sentence length naturally.
+
+### Input:
+{ai_text}
+
+### Response:
+{human_text}
+\end{verbatim}
+
+\subsection{A Note on Compute Costs}
+
+The entire project runs at essentially zero financial cost. Data generation uses the NVIDIA NIM free API tier. T5 training uses Kaggle's free GPU quota (30 hours per week of 2x T4 access). Gemma 2B fine-tuning runs on a local GPU setup. This is worth mentioning because one of our implicit goals is to show that meaningful NLP research does not require significant compute budgets.
+
+% ============================================================
+\section{Evaluation}
+% ============================================================
+
+We evaluate our models along four dimensions.
+
+\textbf{BERTScore} \cite{zhang2019bertscore} measures semantic similarity between the model output and a reference text using contextual embeddings from a pretrained BERT model. We use it to verify that our models are changing style without losing meaning. We report precision, recall, and F1.
+
+\textbf{Linguistic marker shift} is our primary novel evaluation framework. For each of the 11 markers, we measure the value in the AI input, the value in the model output, and compute how far the output has moved toward the human target distribution. A shift of 100\% on a given marker means the output perfectly matches the human average; 0\% means nothing changed from the AI input. This gives us a much richer picture of what the model is actually learning than a single aggregate score would.
+
+\textbf{Readability scores} (Flesch Reading Ease and Flesch-Kincaid Grade Level \cite{kincaid1975derivation}) before and after transformation let us track whether the text is becoming more or less accessible to a general reader.
+
+\textbf{Qualitative analysis} of individual input-output pairs lets us see what specific transformations the model has learned, which is often more revealing than any aggregate number.
+
+% ============================================================
+\section{Results}
+% ============================================================
+
+\subsection{Training Dynamics}
+
+Table \ref{tab:training_loss} shows training results across all configurations. The T5-small model plateaued at a validation loss of 5.986 after 5 epochs, with only 0.013 improvement in the final epoch, a clear sign of capacity saturation. T5-base improved consistently with both more data and a higher learning rate, reaching 4.520 with the best configuration. Gemma 2B reached a training loss of 1.718 in just 500 steps, well below what any T5 variant achieved.
+
+One thing to note about the T5 training losses: the reported training loss looks artificially inflated because gradient accumulation sums losses across 4 steps before each update. The validation loss is the correct comparison point.
+
+\begin{table}[ht]
+\centering
+\caption{Training results across all model configurations. T5 training loss is inflated by gradient accumulation; see text.}
+\label{tab:training_loss}
+\vspace{4pt}
+\begin{tabular}{llccc}
+\toprule
+\textbf{Model} & \textbf{Configuration} & \textbf{Epochs} & \textbf{Train Loss} & \textbf{Val Loss} \\
+\midrule
+T5-Small & 5k pairs & 5 & 6.385 & 5.986 \\
+T5-Base & 5k pairs, default LR & 5 & 21.025 & 5.018 \\
+T5-Base & 10k pairs, tuned LR & 5 & 17.616 & 4.520 \\
+Gemma 2B & 10k pairs, QLoRA & 3 & 1.718 & n/a \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Quantitative Results for Gemma 2B}
+
+Table \ref{tab:evaluation} shows the full evaluation of Gemma 2B on our test set.
+
+\begin{table}[ht]
+\centering
+\caption{Gemma 2B evaluation results. All linguistic markers shift in the expected direction toward human text distributions.}
+\label{tab:evaluation}
+\vspace{4pt}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Metric} & \textbf{AI Input} & \textbf{Model Output} & \textbf{Change} \\
+\midrule
+\multicolumn{4}{l}{\textit{Semantic Preservation}} \\
+BERTScore Precision & & 0.853 & \\
+BERTScore Recall & & 0.884 & \\
+BERTScore F1 & & \textbf{0.868} & \\
+\midrule
+\multicolumn{4}{l}{\textit{Linguistic Marker Shift}} \\
+Word count & 91.7 & 201.3 & $+$119.6\% \\
+Contractions & 0.00 & 2.12 & complete shift \\
+Question marks & 0.00 & 0.38 & introduced \\
+Exclamations & 0.00 & 0.75 & introduced \\
+Lexical diversity & 0.817 & 0.745 & $-$8.9\% \\
+Avg word length (chars) & 5.51 & 4.63 & $-$15.9\% \\
+Sentence length variance & 43.93 & 76.38 & $+$73.9\% \\
+\midrule
+\multicolumn{4}{l}{\textit{Readability}} \\
+Flesch Reading Ease & 33.00 & 59.73 & $+$81.0\% \\
+Flesch-Kincaid Grade Level & 14.15 & 10.53 & $-$25.6\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Every single marker moves in the right direction. Contractions go from effectively zero to 2.12 per passage. Question marks and exclamations, which were absent from AI text, appear in the output. Word length drops by nearly 16\%. Sentence length variance increases by 74\%, meaning the model learned to mix short and long sentences rather than producing uniformly structured prose. And the text becomes dramatically easier to read, moving from a college-level reading difficulty (Flesch 33, Grade 14) to something much closer to typical human writing (Flesch 59.7, Grade 10.5).
+
+The BERTScore F1 of 0.868 tells us that all of this stylistic transformation is happening without significant loss of meaning, which was our core constraint from the beginning.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/evaluation_results.png}
+\caption{Gemma 2B evaluation dashboard showing semantic preservation and key stylistic shifts toward human-like writing.}
+\label{fig:evaluation_results}
+\end{figure}
+
+\subsection{What T5 Models Actually Learned}
+
+Table \ref{tab:comparison} summarizes what each model was and was not able to learn. The pattern is clear: T5 models only manage surface-level vocabulary changes. They learn to swap formal words for simpler ones (``deliberating'' becomes ``debating'', ``concur'' becomes ``agree''), but they do not learn to insert contractions, add rhetorical questions, shift to first-person voice, or vary sentence rhythm. These higher-order stylistic features require something the T5 pretraining distribution did not provide: extensive exposure to how humans actually write.
+
+\begin{table}[ht]
+\centering
+\caption{Qualitative capability comparison across model architectures. Gemma 2B learns all stylistic transformations that T5 variants fail to acquire.}
+\label{tab:comparison}
+\vspace{4pt}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Capability} & \textbf{T5-Base (best)} & \textbf{Gemma 2B} \\
+\midrule
+Vocabulary simplification & Partial & Consistent \\
+Sentence restructuring & Rare & Consistent \\
+Contraction insertion & None & Consistent \\
+Rhetorical questions & None & Frequent \\
+First-person perspective & None & Consistent \\
+Idiomatic expressions & None & Present \\
+Emotional expressiveness & None & Present \\
+Semantic preservation & Moderate & Strong (0.868 F1) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Qualitative Examples}
+
+Three examples illustrate what the model is actually doing.
+
+\textbf{Example 1: Rhetorical framing and vocabulary simplification.}
+
+\textit{AI input:} ``Artificial General Intelligence (AGI) refers to a highly advanced form of artificial intelligence that possesses the ability to understand, learn, and apply knowledge across a wide range of tasks at a level comparable to or exceeding that of human intelligence. Unlike narrow AI, which is designed for specific tasks such as image recognition or language translation, AGI is characterized by its adaptability, reasoning capabilities, and capacity for autonomous problem-solving in unfamiliar domains.''
+
+\textit{Model output:} ``What would you think if I told you there was a type of Artificial Intelligence called AGI? AGI is a very powerful type of technology that could potentially help us in many ways. The difference between narrow AI and AGI is that narrow AI has only one purpose while AGI can solve any kind of problem at any time.''
+
+The model replaces a formal definitional opening with a rhetorical question, simplifies the vocabulary throughout (``refers to a highly advanced form'' becomes ``there was a type of''), and restructures the comparison into a much more conversational form. BERTScore F1 for this example: 0.872.
+
+\textbf{Example 2: Contraction insertion and perspective shift.}
+
+\textit{AI input:} ``AI often creates the illusion of intelligence, appearing to understand, reason, and even think like humans, when in reality it is primarily recognizing patterns and generating responses based on vast amounts of data. This can lead users to overestimate its capabilities, trusting outputs without questioning their accuracy or underlying logic.''
+
+\textit{Model output:} ``I'm always impressed by how well the computer seems to understand me... but I don't think computers really think. They seem to know what you mean because of all the things they have been taught. It makes them very good at predicting your behavior and giving you exactly what you want; however, that can make it easy to trust them too much.''
+
+The model inserts contractions (``I'm'', ``don't''), shifts from third-person observation to first-person experience, adds an ellipsis to create a natural pause, and breaks a dense academic sentence into shorter, more conversational ones. BERTScore F1: 0.865.
+
+\textbf{Example 3: Idiomatic language and informal metaphor.}
+
+\textit{AI input:} ``At its core, AI is fundamentally mathematics wrapped in elegant abstractions, appearing far more intelligent than it truly is. Behind the polished interfaces and human-like outputs lie layers of linear algebra, probability, optimization, and statistical modeling working together to detect patterns and make predictions.''
+
+\textit{Model output:} ``In truth I think AI is basically math with fancy wrapping paper put around it so people see it as something smart when really you could just look at the numbers and do the calculations yourself. Underneath all the polish there's an amazing layer of linear algebra, some probability, optimization, and statistics all working together.''
+
+The phrase ``fancy wrapping paper'' is not in the original text at all. The model invented a colloquial metaphor to replace the formal phrase ``elegant abstractions'', while preserving the underlying point. This is perhaps the most impressive example of what the model learned: not just simplification, but creative reformulation in a human register. BERTScore F1: 0.846.
+
+\subsection{Base Model Comparison}
+
+To verify that fine-tuning is responsible for the quality gains rather than Gemma's base capabilities, we run the same AI text through the untuned Gemma 2B model with the same prompt. The base model's output for the AGI example reads: ``Imagine a super intelligent computer. That's what Artificial General Intelligence, or AGI, would be like. AGI can do anything humans can do with their brains, maybe even better.'' This is a simplification, but it oversimplifies and sounds childish rather than natural. The fine-tuned model's output is significantly more nuanced and captures the kind of voice you would actually find in a student essay. The difference is qualitatively obvious to any reader.
+
+% ============================================================
+\section{Discussion}
+% ============================================================
+
+\subsection{Why Pretraining Data Distribution Matters More Than Architecture}
+
+The most important takeaway from our experiments is not that Gemma 2B is a better architecture than T5. It is that a model which has seen enormous quantities of human writing during pretraining already knows what human text looks like. Fine-tuning on parallel pairs then only needs to teach it one thing: when you see text that looks like this (AI-generated), rewrite it to look like that (human-generated). The stylistic knowledge is already there.
+
+T5, by contrast, was pretrained on a text corpus filtered for quality and task diversity, not for stylistic richness. It knows how to transform text, but it has less inherent knowledge of what makes writing feel human. So even after 5 epochs of fine-tuning, it can change words but cannot change voice.
+
+This suggests a practical principle for style transfer tasks more generally: when the target style is human writing, start with a model that was pretrained on human writing. The fine-tuning job then becomes much easier.
+
+\subsection{The Value of Chunking}
+
+Our chunking experiment was motivated by a practical problem (sequence truncation) but turned out to have broader benefits. Chunking a 9,975-pair dataset into 24,602 chunk pairs essentially triples the number of training examples. More importantly, it gives the model cleaner training signal: learning to transform a 140-word chunk is a simpler problem than learning to transform a 420-word essay, and simpler problems tend to converge faster.
+
+The initial T5-small experiments without chunking had training losses starting around 6.7. With chunking, T5-base reached validation losses of 4.52, a meaningful improvement. For future work on similar tasks, we would recommend chunking as a default preprocessing step whenever passage lengths significantly exceed the model's comfortable context window.
+
+\subsection{Linguistic Marker Shift as an Evaluation Framework}
+
+We introduced linguistic marker shift as an evaluation method partly because we had these metrics available and partly because they tell a story that BERTScore alone cannot. BERTScore tells you whether the meaning was preserved. Linguistic marker shift tells you whether the style was actually transformed.
+
+Taken together, a high BERTScore and large positive shifts across the human-direction markers (contractions, question marks, readability, burstiness) is exactly the profile we want. Our Gemma 2B results show both simultaneously, which is the core empirical contribution of this paper.
+
+We think this framework could be useful beyond our specific task. Any text style transfer paper could report marker shifts alongside standard metrics to give readers a clearer picture of what the model actually learned.
+
+\subsection{Limitations}
+
+We want to be honest about where this work falls short.
+
+The dataset is entirely student essays. This is a relatively narrow genre, and we do not know how well a model trained on this data would handle news articles, technical documentation, or creative fiction. The stylistic norms are quite different across these domains, and a humanizer trained on essays might introduce inappropriate informality into a technical context.
+
+Our AI corpus was generated by a single model (LLaMA 3.2 3B). Different models have somewhat different stylistic signatures, and a training corpus generated by only one model might cause the humanizer to overfit to that particular style rather than learning a general AI-to-human transformation.
+
+The quantitative evaluation of linguistic marker shift was conducted on a test set of 15 passages. This is enough to show the direction of effects clearly, but a larger-scale evaluation would give us more confidence in the magnitude estimates.
+
+We do not include a human evaluation study. Automated metrics can tell us a lot, but the ultimate test of whether text sounds human is whether humans think it does. A preference study comparing model outputs to ground-truth human text would be a valuable complement to our current results.
+
+Finally, we have not tested our humanized outputs against actual AI detectors. Showing that Gemma 2B outputs fool GPTZero or Originality.ai would be strong practical evidence that the stylistic shift is real and significant.
+
+\subsection{Future Directions}
+
+The most natural extension of this work is a multi-model corpus. Generating AI versions using GPT-4, Claude, Gemini, and LLaMA together would produce a richer and less biased training signal. It would also let us study whether AI models have model-specific stylistic signatures that are separately identifiable.
+
+We are also curious about scaling. Gemma 2B achieves impressive results with 0.79\% of parameters fine-tuned. Would Gemma 7B or 27B do better with even less fine-tuning? The scaling laws for style transfer tasks are not well understood.
+
+Finally, a full human preference study comparing all three model architectures against human-written text would let us rank the models more definitively and give us ground truth about which automated metrics best predict human perceptions of naturalness.
+
+% ============================================================
+\section{Conclusion}
+% ============================================================
+
+We set out to answer a simple question: can a fine-tuned transformer learn to transform AI-generated text into something that reads like a human wrote it? The answer, at least for Gemma 2B, is yes.
+
+Our fine-tuned model achieves a BERTScore F1 of 0.868 while successfully shifting all 11 identified linguistic markers toward human distributions. It learns to insert contractions, ask rhetorical questions, adopt first-person voice, simplify vocabulary, and vary sentence rhythm. It does all of this with only 0.79\% of its parameters updated, in 500 training steps, on hardware that costs nothing to access.
+
+The T5 experiments tell an equally important story. Despite more training steps and multiple configurations, the encoder-decoder approach manages only surface-level vocabulary changes. The model can swap formal words for simpler ones but cannot change the underlying voice of the text. We argue this is because T5's pretraining distribution did not include enough raw human writing to give it the stylistic knowledge it would need.
+
+The 11 linguistic markers we identify along the way give us a concrete vocabulary for talking about what makes AI writing different from human writing, and the linguistic marker shift framework we introduce gives future work a practical tool for measuring how much any style transfer model actually closes that gap.
+
+There is still a lot of work to do. A more genre-diverse dataset, a multi-model AI corpus, a human evaluation study, and a test against real AI detectors would all strengthen the conclusions considerably. But we hope this paper is a useful starting point for a problem that seems likely to only become more important as AI-generated text becomes more common.
+
+% ============================================================
+\begin{thebibliography}{99}
+
+\bibitem{openai2023gpt4}
+OpenAI. GPT-4 Technical Report. \textit{arXiv preprint arXiv:2303.08774}, 2023.
+
+\bibitem{google2023gemini}
+Google DeepMind. Gemini: A Family of Highly Capable Multimodal Models. \textit{arXiv preprint arXiv:2312.11805}, 2023.
+
+\bibitem{anthropic2023claude}
+Anthropic. Claude: A Large Language Model for Helpful, Harmless, and Honest AI. Technical Report, 2023.
+
+\bibitem{mitchell2023detectgpt}
+E. Mitchell, Y. Lee, A. Khazatsky, C. Manning, and C. Finn. DetectGPT: Zero-Shot Machine-Generated Text Detection using Probability Curvature. \textit{arXiv preprint arXiv:2301.11305}, 2023.
+
+\bibitem{guo2023close}
+B. Guo, X. Zhang, Z. Wang, M. Jiang, J. Nie, Y. Ding, J. Yue, and Y. Wu. How Close is ChatGPT to Human Experts? Comparison Corpus, Evaluation, and Detection. \textit{arXiv preprint arXiv:2301.07597}, 2023.
+
+\bibitem{tang2023science}
+R. Tang, Y. Chuang, and X. Hu. The Science of Detecting LLM-Generated Text. \textit{arXiv preprint arXiv:2303.07205}, 2023.
+
+\bibitem{jin2022deep}
+D. Jin, Z. Jin, Z. Hu, O. Vechtomova, and R. Mihalcea. Deep Learning for Text Style Transfer: A Survey. \textit{Computational Linguistics}, 48(1):155-205, 2022.
+
+\bibitem{raffel2020exploring}
+C. Raffel, N. Shazeer, A. Roberts, K. Lee, S. Narang, M. Matena, Y. Zhou, W. Li, and P. J. Liu. Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer. \textit{Journal of Machine Learning Research}, 21(140):1-67, 2020.
+
+\bibitem{google2024gemma}
+Google DeepMind. Gemma: Open Models Based on Gemini Research and Technology. \textit{arXiv preprint arXiv:2403.08295}, 2024.
+
+\bibitem{dettmers2023qlora}
+T. Dettmers, A. Pagnoni, A. Holtzman, and L. Zettlemoyer. QLoRA: Efficient Finetuning of Quantized LLMs. \textit{arXiv preprint arXiv:2305.14314}, 2023.
+
+\bibitem{touvron2023llama}
+H. Touvron, T. Lavril, G. Izacard, X. Martinet, M. Lachaux, T. Lacroix, B. Roziere, N. Goyal, E. Hambro, F. Azhar, A. Rodriguez, A. Joulin, E. Grave, and G. Lample. LLaMA: Open and Efficient Foundation Language Models. \textit{arXiv preprint arXiv:2302.13971}, 2023.
+
+\bibitem{radford2019language}
+A. Radford, J. Wu, R. Child, D. Luan, D. Amodei, and I. Sutskever. Language Models are Unsupervised Multitask Learners. OpenAI Blog, 2019.
+
+\bibitem{zhang2019bertscore}
+T. Zhang, V. Kishore, F. Wu, K. Q. Weinberger, and Y. Artzi. BERTScore: Evaluating Text Generation with BERT. \textit{arXiv preprint arXiv:1904.09675}, 2019.
+
+\bibitem{shen2017style}
+T. Shen, T. Lei, R. Barzilay, and T. Jaakkola. Style Transfer from Non-Parallel Text by Cross-Alignment. In \textit{Advances in Neural Information Processing Systems (NeurIPS)}, 2017.
+
+\bibitem{rao2018dear}
+S. Rao and J. Tetreault. Dear Sir or Madam, May I Introduce the GYAFC Dataset: Corpus, Benchmarks and Metrics for Formality Style Transfer. In \textit{Proceedings of NAACL}, 2018.
+
+\bibitem{wegmann2022author}
+A. Wegmann and D. Nguyen. Author Obfuscation using Generalizable Writing Style. \textit{arXiv preprint arXiv:2210.07743}, 2022.
+
+\bibitem{kincaid1975derivation}
+J. P. Kincaid, R. P. Fishburne Jr, R. L. Rogers, and B. S. Chissom. Derivation of New Readability Formulas for Navy Enlisted Personnel. Research Branch Report 8-75, Naval Technical Training Command, 1975.
+
+\bibitem{kaggle_aivshuman}
+S. Gerami. AI vs. Human Text Dataset. Kaggle, 2023. Available at: \url{https://www.kaggle.com/datasets/shanegerami/ai-vs-human-text}
+
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,36 @@
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment configurations
+.python-version
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Large datasets and CSVs
+*.csv
+data/*.csv
+
+# Specific models and tokenizers (as requested)
+DecoderInference/HumanizerModel/
+DecoderInference/HumanizerTokoenizer/
+HumanizerModel/
+HumanizerTokoenizer/
+
+# VS Code config
+.vscode/
+
+# Other Logs
+*.log
